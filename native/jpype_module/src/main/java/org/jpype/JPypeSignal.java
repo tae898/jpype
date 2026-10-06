@@ -59,13 +59,26 @@ public class JPypeSignal
       Method method = Signal.getMethod("handle", Signal, SignalHandler);
       Object intr = Signal.getDeclaredConstructor(String.class).newInstance("INT");
       method.invoke(null, intr, getSignalHandler(SignalHandler, 2));
-      Object intrTerm = Signal.getDeclaredConstructor(String.class).newInstance("TERM");
-      method.invoke(null, intrTerm, getSignalHandler(SignalHandler, 15));
+
+      // Take SIGTERM over from the JVM only if Python has a handler to hand it
+      // to.  interruptPy() cannot deliver a signal to Python's default handler
+      // (it is dropped), and the JVM's own handler, which runs the shutdown
+      // hooks and exits with status 143, would be gone.  A script that did not
+      // register a SIGTERM handler would then no longer stop on SIGTERM.  So
+      // without a Python handler the JVM's handler stays in place.
+      if (pythonHandles(15))
+      {
+        Object intrTerm = Signal.getDeclaredConstructor(String.class).newInstance("TERM");
+        method.invoke(null, intrTerm, getSignalHandler(SignalHandler, 15));
+      }
     } catch (InvocationTargetException | IllegalArgumentException | IllegalAccessException | InstantiationException | ClassNotFoundException | NoSuchMethodException | SecurityException ex)
     {
       // If we don't get the signal handler run without it.  (ANDROID)
     }
   }
+
+  /** True if Python has a callable handler registered for the signal. */
+  native static boolean pythonHandles(int signal);
 
   native static void interruptPy(int signal);
 
