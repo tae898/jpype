@@ -655,7 +655,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_jpype_JPypeContext_onShutdown
 
 static int interruptState = 0;
 extern "C" JNIEXPORT void JNICALL Java_org_jpype_JPypeSignal_interruptPy
-(JNIEnv *env, jclass cls, jint signal)
+(JNIEnv *env, jclass cls, jint signal, jobject mainThread)
 {
 	interruptState = 1;
 	// This runs on the JVM's signal handler thread, which Python has never
@@ -670,6 +670,21 @@ extern "C" JNIEXPORT void JNICALL Java_org_jpype_JPypeSignal_interruptPy
 #else
 	PyErr_SetInterruptEx((int) signal);
 #endif
+	// Wake the main thread while still holding the GIL.  The main thread can
+	// only look at the signal that was just recorded, or make its next Java
+	// call, after it has the GIL back, and by then its Java interrupt flag is
+	// set.  Waking it before recording the signal lets it convert the
+	// InterruptedException before the signal is pending, and waking it after
+	// releasing the GIL lets a main thread that already handled the signal
+	// make a Java call that the late interrupt then hits.
+	if (mainThread != nullptr)
+	{
+		jmethodID interrupt = env->GetMethodID(env->GetObjectClass(mainThread), "interrupt", "()V");
+		if (interrupt != nullptr)
+			env->CallVoidMethod(mainThread, interrupt);
+		if (env->ExceptionCheck())
+			env->ExceptionClear();
+	}
 }
 
 extern "C" JNIEXPORT void JNICALL Java_org_jpype_JPypeSignal_acknowledgePy
