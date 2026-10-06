@@ -658,6 +658,13 @@ extern "C" JNIEXPORT void JNICALL Java_org_jpype_JPypeSignal_interruptPy
 (JNIEnv *env, jclass cls, jint signal)
 {
 	interruptState = 1;
+	// This runs on the JVM's signal handler thread, which Python has never
+	// seen.  PyErr_SetInterruptEx() compares the handler registered for the
+	// signal with SIG_DFL and SIG_IGN, and that needs an attached thread state.
+	// Without one the process crashes in PyObject_RichCompareBool() whenever
+	// Python's handler is still the default (always true for SIGTERM in a
+	// script).
+	JPPyCallAcquire callback;
 #if PY_MINOR_VERSION<10
 	PyErr_SetInterrupt();
 #else

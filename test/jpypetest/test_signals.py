@@ -15,10 +15,12 @@
 #   See NOTICE file for details.
 #
 # *****************************************************************************
+import glob
 import os
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
 import jpype
@@ -154,3 +156,84 @@ class SignalInterruptRaceTest(unittest.TestCase):
         err = result.stderr.decode("utf-8", "replace")
         self.assertEqual(result.returncode, 0, out + err)
         self.assertIn("RESULT %d OK" % self.trials, out)
+
+
+# Child process for SignalTermDefaultHandlerTest.  Python's handler for SIGTERM
+# is left at the default, which is the normal state of a script.
+_TERM_SCRIPT = """
+import resource, sys, time
+import jpype
+
+# a crash of this process must not leave a core file behind
+resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+jpype.startJVM(interrupt=False)
+print("READY", flush=True)
+time.sleep(60)
+"""
+
+
+def _sigterm_child(wait):
+    """Start the child, send it SIGTERM when it is ready, and wait up to `wait`
+    seconds for it to stop (it is killed after that).
+
+    Returns the line the child printed when it was ready, whether it stopped
+    on its own, its exit status, the crash reports that the JVM wrote in the
+    working directory of the child, and what it wrote to stderr.
+    """
+    with tempfile.TemporaryDirectory() as cwd:
+        errfile = os.path.join(cwd, "stderr.txt")
+        stopped = False
+        with open(errfile, "wb") as err:
+            child = subprocess.Popen([sys.executable, "-c", _TERM_SCRIPT],
+                                     cwd=cwd, stdout=subprocess.PIPE,
+                                     stderr=err)
+            # Never leave the child behind if something goes wrong.
+            guard = threading.Timer(120, child.kill)
+            guard.start()
+            try:
+                ready = child.stdout.readline().decode("utf-8", "replace").strip()
+                if ready != "READY":
+                    child.kill()
+                else:
+                    child.send_signal(signal.SIGTERM)
+                    try:
+                        child.wait(timeout=wait)
+                        stopped = True
+                    except subprocess.TimeoutExpired:
+                        child.kill()
+                child.wait()
+            finally:
+                guard.cancel()
+                child.stdout.close()
+        with open(errfile, "rb") as err:
+            stderr = err.read().decode("utf-8", "replace")
+        reports = glob.glob(os.path.join(cwd, "hs_err_pid*.log"))
+    return ready, stopped, child.returncode, reports, stderr
+
+
+class SignalTermDefaultHandlerTest(unittest.TestCase):
+    """SIGTERM must not crash a process that started the JVM with
+    interrupt=False and did not register a Python handler for SIGTERM.
+
+    The handler that startJVM(interrupt=False) installs for SIGTERM runs on a
+    thread of the JVM that Python has never seen.  It used to call
+    PyErr_SetInterruptEx() without holding the GIL, and CPython then crashed
+    in PyObject_RichCompareBool() while comparing the (default) Python handler
+    with SIG_DFL.  SignalsTest registers Python handlers before startJVM,
+    which takes a different path through CPython and so does not cover this.
+    """
+
+    def setUp(self):
+        if sys.platform == "win32":
+            raise unittest.SkipTest("signals test not applicable on windows")
+
+    def testSigTermDoesNotCrash(self):
+        ready, stopped, returncode, reports, stderr = _sigterm_child(wait=3)
+        self.assertEqual(ready, "READY", stderr)
+        self.assertEqual(reports, [], "the JVM wrote a crash report\n" + stderr)
+        # Whether the process should stop on SIGTERM is not what this test is
+        # about, only that it does not crash.
+        if stopped:
+            self.assertNotIn(returncode,
+                             (-signal.SIGSEGV, -signal.SIGABRT, 128 + signal.SIGSEGV,
+                              128 + signal.SIGABRT), stderr)
