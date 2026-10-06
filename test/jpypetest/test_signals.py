@@ -237,3 +237,68 @@ class SignalTermDefaultHandlerTest(unittest.TestCase):
             self.assertNotIn(returncode,
                              (-signal.SIGSEGV, -signal.SIGABRT, 128 + signal.SIGSEGV,
                               128 + signal.SIGABRT), stderr)
+
+
+# Child process for SignalStaleInterruptTest.  Each trial runs a loop of short
+# Java calls until a SIGINT from a timer thread raises KeyboardInterrupt, then
+# makes a blocking Java call.
+_STALE_SCRIPT = """
+import os, random, signal, sys, threading, time
+import jpype
+
+trials = int(sys.argv[1])
+signal.signal(signal.SIGINT, signal.default_int_handler)
+jpype.startJVM(interrupt=False)
+Thread = jpype.JClass("java.lang.Thread")
+Math = jpype.JClass("java.lang.Math")
+result = "OK"
+for i in range(trials):
+    timer = threading.Timer(random.uniform(0.005, 0.02), os.kill,
+                            (os.getpid(), signal.SIGINT))
+    timer.start()
+    try:
+        end = time.monotonic() + 5.0
+        while time.monotonic() < end:
+            Math.abs(1)
+        result = "trial %d: the SIGINT was not delivered" % i
+        break
+    except KeyboardInterrupt:
+        pass
+    timer.join()
+    try:
+        Thread.sleep(20)
+    except BaseException as ex:
+        result = "trial %d: %s: %s" % (i, type(ex).__name__, ex)
+        break
+print("RESULT " + result, flush=True)
+os._exit(0 if result == "OK" else 1)
+"""
+
+
+class SignalStaleInterruptTest(unittest.TestCase):
+    """A SIGINT that Python has handled must not leave an interrupt behind.
+
+    The handler of startJVM(interrupt=False) sets the interrupt flag of the
+    main thread.  When the main thread is running Python or making Java calls
+    it handles the KeyboardInterrupt first, and the next Java call of the main
+    thread clears the flag (hasInterrupt() then clearInterrupt()) provided the
+    flag was set before that call.  If the signal handler announces the signal
+    before it sets the flag, a main thread that makes Java calls in a loop
+    consumes the announcement too early, and the flag that is set a moment
+    later makes the next blocking Java call raise InterruptedException.
+    """
+
+    trials = 300
+
+    def setUp(self):
+        if sys.platform == "win32":
+            raise unittest.SkipTest("signals test not applicable on windows")
+
+    def testBlockingCallAfterHandledSigint(self):
+        result = subprocess.run([sys.executable, "-c", _STALE_SCRIPT, str(self.trials)],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=120)
+        out = result.stdout.decode("utf-8", "replace")
+        err = result.stderr.decode("utf-8", "replace")
+        self.assertEqual(result.returncode, 0, out + err)
+        self.assertIn("RESULT OK", out)
