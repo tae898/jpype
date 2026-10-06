@@ -23,6 +23,15 @@ Latest Changes:
     ``SIG_DFL``.  It now acquires the GIL like the other callbacks from Java
     threads.  #1497
 
+  - With ``startJVM(interrupt=False)`` a ``SIGTERM`` (or ``SIGINT``) for which
+    Python has no handler of its own no longer gets lost.  Python cannot be
+    handed a signal whose handler is the default, so a script without a
+    ``SIGTERM`` handler ignored ``SIGTERM`` and a plain ``kill`` no longer
+    stopped it.  The JPype handler now runs the default action itself in that
+    case: it runs the shutdown hooks and ends the process with status 128 plus
+    the signal number (143 for ``SIGTERM``), as it does with
+    ``interrupt=True``.  #1497
+
   - Fixed ``startJVM()`` printing a "restricted method" / native access
     warning on JDK 22+ (``java.lang.System::load has been called ... in an
     unnamed module``). JPype now probes the JVM's supported JNI version

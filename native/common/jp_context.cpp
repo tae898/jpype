@@ -672,6 +672,32 @@ extern "C" JNIEXPORT void JNICALL Java_org_jpype_JPypeSignal_interruptPy
 #endif
 }
 
+/**
+ * Does Python have a handler for this signal that interruptPy can hand the
+ * signal to?  If not, the Java handler runs the default action itself.
+ *
+ * signal.getsignal() returns a callable when Python code registered a handler,
+ * SIG_DFL or SIG_IGN when it is at the default or ignored, and None when the
+ * handler was not installed from Python.  PyErr_SetInterruptEx() only trips a
+ * signal whose handler is not SIG_DFL or SIG_IGN, so for those two the signal
+ * would simply be lost.
+ *
+ * May be called with or without the GIL.
+ */
+extern "C" JNIEXPORT jboolean JNICALL Java_org_jpype_JPypeSignal_pythonHandles
+(JNIEnv *env, jclass cls, jint signal)
+{
+	JPPyCallAcquire callback;
+	JPPyObject module = JPPyObject::accept(PyImport_ImportModule("signal"));
+	if (module.get() == nullptr)
+		return JNI_FALSE;
+	JPPyObject handler = JPPyObject::accept(
+			PyObject_CallMethod(module.get(), "getsignal", "i", (int) signal));
+	if (handler.get() == nullptr)
+		return JNI_FALSE;
+	return PyCallable_Check(handler.get()) ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT void JNICALL Java_org_jpype_JPypeSignal_acknowledgePy
 (JNIEnv *env, jclass cls)
 {

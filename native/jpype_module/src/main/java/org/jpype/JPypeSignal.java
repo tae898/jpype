@@ -37,6 +37,17 @@ public class JPypeSignal
       signalHandlerClazz
     }, (proxy, method, args) ->
     {
+      // Python can only be handed a signal that it has a handler for.  If its
+      // handler is the default (always the case for SIGTERM in a script that
+      // did not register one) the signal would be dropped.  Then do what the
+      // JVM's own handler does: run the shutdown hooks and exit with status
+      // 128 + signal.
+      if (!pythonHandles(signal))
+      {
+        Runtime.getRuntime().exit(128 + signal);
+        return null;
+      }
+
       // Record the signal for Python before waking the main thread.  If the
       // main thread is blocked in Thread.sleep() or Object.wait(), interrupt()
       // makes it throw InterruptedException, and JPJavaError::toPython() then
@@ -66,6 +77,9 @@ public class JPypeSignal
       // If we don't get the signal handler run without it.  (ANDROID)
     }
   }
+
+  /** True if Python has a callable handler registered for the signal. */
+  native static boolean pythonHandles(int signal);
 
   native static void interruptPy(int signal);
 

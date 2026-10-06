@@ -237,3 +237,13 @@ class SignalTermDefaultHandlerTest(unittest.TestCase):
             self.assertNotIn(returncode,
                              (-signal.SIGSEGV, -signal.SIGABRT, 128 + signal.SIGSEGV,
                               128 + signal.SIGABRT), stderr)
+
+    def testSigTermStopsProcess(self):
+        # Without a Python handler SIGTERM stops the process the way it stops
+        # a JVM that handles it itself: the shutdown hooks run and the exit
+        # status is 128 + SIGTERM.
+        ready, stopped, returncode, reports, stderr = _sigterm_child(wait=20)
+        self.assertEqual(ready, "READY", stderr)
+        self.assertEqual(reports, [], "the JVM wrote a crash report\n" + stderr)
+        self.assertTrue(stopped, "still running 20 s after SIGTERM\n" + stderr)
+        self.assertEqual(returncode, 128 + signal.SIGTERM, stderr)
